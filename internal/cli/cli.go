@@ -90,6 +90,7 @@ func (c *MentatCLI) doHelp() {
     fmt.Println()
 }
 
+
 func (c *MentatCLI) doOverview() {
     fmt.Printf("\n=== Data Overview ===\n")
     fmt.Printf("Total log events:       %d\n", len(c.mentat.Events))
@@ -106,14 +107,13 @@ func (c *MentatCLI) doOverview() {
     fmt.Printf("Configured connectors:  %d\n", counts["configured_connector"])
     fmt.Printf("Configured listeners:   %d\n", counts["configured_listener"])
     fmt.Printf("HTTP listeners:         %d\n", counts["http_listener"])
-    fmt.Printf("Client listeners:       %d\n", counts["listening_for_client"])
+    fmt.Printf("Client listeners:       %d\n", counts["client_listener"])
     fmt.Printf("TCP listeners:          %d\n", counts["tcp_listener"])
     fmt.Printf("TCP connectors:         %d\n", counts["tcp_connector"])
     fmt.Printf("Server listening:       %d\n", counts["server_listening"])
     fmt.Printf("Errors:                 %d\n", counts["error"])
     fmt.Println()
 }
-
 func (c *MentatCLI) doSites() {
     for _, s := range c.mentat.Sites {
         fmt.Printf("site: %s   routers: %d\n", s.Name, len(s.Routers))
