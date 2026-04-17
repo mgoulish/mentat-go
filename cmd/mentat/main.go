@@ -1,54 +1,64 @@
 package main
 
 import (
-    "flag"
-    "fmt"
-    "os"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
 
-    "github.com/mgoulish/mentat/internal/cli"
-    "github.com/mgoulish/mentat/internal/config"
-    "github.com/mgoulish/mentat/internal/connectivity"
-    "github.com/mgoulish/mentat/internal/debug"
-    "github.com/mgoulish/mentat/internal/new"
-    "github.com/mgoulish/mentat/internal/parser"
+	"github.com/mgoulish/mentat/internal/cli"
+	"github.com/mgoulish/mentat/internal/config"
+	"github.com/mgoulish/mentat/internal/connectivity"
+	"github.com/mgoulish/mentat/internal/debug"
+	"github.com/mgoulish/mentat/internal/new"
+	"github.com/mgoulish/mentat/internal/parser"
 )
 
 func main() {
-    rootPtr := flag.String("root", "", "root dir for the network run (contains site dirs)")
-    info := flag.Bool("info", false, "Print info messages")
-    dbg := flag.Bool("debug", false, "Print debug messages")
-    script := flag.String("script", "", "Run commands from this script file")
+	rootPtr := flag.String("root", "", "root dir for the network run (contains site dirs like wynford/, dorval/)")
+	info := flag.Bool("info", false, "Print info messages")
+	dbg := flag.Bool("debug", false, "Print debug messages")
+	script := flag.String("script", "", "Run commands from this script file (not yet implemented)")
 
-    flag.Parse()
+	flag.Parse()
 
-    if *rootPtr == "" {
-        fmt.Println("Error: --root is required")
-        flag.Usage()
-        os.Exit(1)
-    }
+	if *rootPtr == "" {
+		fmt.Println("Error: --root is required")
+		flag.Usage()
+		os.Exit(1)
+	}
 
-    debug.SetInfo(*info)
-    debug.SetDebug(*dbg)
+	// Clean and validate root path
+	root := filepath.Clean(*rootPtr)
+	if _, err := os.Stat(root); os.IsNotExist(err) {
+		fmt.Printf("Error: root directory does not exist: %s\n", root)
+		os.Exit(1)
+	}
 
-    mentat := new.NewMentat(*rootPtr)
+	debug.SetInfo(*info)
+	debug.SetDebug(*dbg)
 
-    config.ReadNetwork(mentat)
-    parser.ReadEvents(mentat)
-    connectivity.ReadConnectivityEvents(mentat)
+	fmt.Printf("Mentat loading data from: %s\n\n", root)
 
-    debug.Info(fmt.Sprintf("mentat now has %d total events", len(mentat.Events)))
+	mentat := new.NewMentat(root)
 
-    // Start CLI
-    c := cli.NewMentatCLI(mentat)
+	config.ReadNetwork(mentat)
+	parser.ReadEvents(mentat)
+	connectivity.ReadConnectivityEvents(mentat)
 
-    if *script != "" {
-        if err := c.RunScript(*script); err != nil {
-            fmt.Printf("Error running script: %v\n", err)
-        }
-    }
+	debug.Info(fmt.Sprintf("mentat now has %d total events", len(mentat.Events)))
 
-    if err := c.Run(); err != nil {
-        fmt.Printf("CLI error: %v\n", err)
-        os.Exit(1)
-    }
+	// Start CLI
+	c := cli.NewMentatCLI(mentat)
+	c.SetRoot(root)   // ← fixed: use setter instead of direct field access
+
+	// Handle script if provided
+	if *script != "" {
+		fmt.Printf("Warning: script support not yet implemented. Ignoring --script %s\n", *script)
+	}
+
+	if err := c.Run(); err != nil {
+		fmt.Printf("CLI error: %v\n", err)
+		os.Exit(1)
+	}
 }
