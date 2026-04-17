@@ -3,6 +3,8 @@ package connectivity
 import (
     "fmt"
     "regexp"
+    "sort"
+    "time"
 
     "github.com/mgoulish/mentat/internal/debug"
     "github.com/mgoulish/mentat/internal/new"
@@ -10,6 +12,7 @@ import (
 )
 
 var (
+    
     tsRegex = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)`)
 
     // Router startup
@@ -50,6 +53,10 @@ var (
 
     // Errors
     errorRegex              = regexp.MustCompile(`(?i)(error|ERROR|failed|fail|framing-error|Unknown protocol)`)
+    
+    //interRouterLinkRegex = regexp.MustCompile(`prd-wyn-skupper-router-\S+`)
+    interRouterLinkRegex = regexp.MustCompile(`prd-wyn-skupper-router-\S+`)
+    mongoServiceRegex    = regexp.MustCompile(`prd-mc-rs-mdb-\S+`)
 )
 
 func ReadConnectivityEvents(mentat *new.Mentat) {
@@ -180,4 +187,115 @@ func parseLogLine(line, site, router string) new.ConnectivityEvent {
     }
 
     return nil
+}
+
+// ================================================================
+// Connectivity State Snapshot
+// ================================================================
+
+// ConnectivityState holds the router's connectivity picture at any chosen moment.
+type ConnectivityState struct {
+	Timestamp        time.Time
+	ConnectedRouters []string // inter-router neighbors
+	ActiveServices   []string // MongoDB services via flow/tcp listeners
+	ActiveClients    int      // accepted connections
+}
+
+// stateTracker tracks live state while replaying events.
+type stateTracker struct {
+	connectedRouters map[string]bool
+	activeServices   map[string]bool
+	activeClients    int
+}
+
+
+// StateAt returns the connectivity state at or immediately before the given timestamp.
+func StateAt(events []new.ConnectivityEvent, t time.Time) *ConnectivityState {
+	tr := &stateTracker{
+		connectedRouters: make(map[string]bool),
+		activeServices:   make(map[string]bool),
+	}
+
+	target := t.UTC()
+
+	for _, ev := range events {
+		micros, ok := ev["microseconds"].(int64)
+		if !ok {
+			continue
+		}
+		eventTime := time.UnixMicro(micros).UTC()
+
+		if eventTime.After(target) && eventTime.Sub(target) > time.Second {
+			break
+		}
+
+		typ, _ := ev["type"].(string)
+
+		switch typ {
+		case "flow_connector", "configured_connector":
+			// Look for inter-router link (wyn router) in any string field
+			for _, v := range ev {
+				if s, ok := v.(string); ok {
+					if h := interRouterLinkRegex.FindString(s); h != "" {
+						tr.connectedRouters[h] = true
+						break
+					}
+				}
+			}
+
+		case "flow_listener", "tcp_listener", "client_listener", "configured_listener":
+			if svc := extractService(ev); svc != "" {
+				tr.activeServices[svc] = true
+			}
+
+		case "accepted_connection":
+			tr.activeClients++
+		}
+	}
+
+	routers := make([]string, 0, len(tr.connectedRouters))
+	for r := range tr.connectedRouters {
+		routers = append(routers, r)
+	}
+	sort.Strings(routers)
+
+	services := make([]string, 0, len(tr.activeServices))
+	for s := range tr.activeServices {
+		services = append(services, s)
+	}
+	sort.Strings(services)
+
+	return &ConnectivityState{
+		Timestamp:        t,
+		ConnectedRouters: routers,
+		ActiveServices:   services,
+		ActiveClients:    tr.activeClients,
+	}
+}
+
+
+
+func extractService(ev new.ConnectivityEvent) string {
+	for _, key := range []string{"service", "listener_name", "dest_host"} {
+		if v, ok := ev[key]; ok && v != nil {
+			s := fmt.Sprintf("%v", v)
+			if m := mongoServiceRegex.FindString(s); m != "" {
+				return m
+			}
+		}
+	}
+	return ""
+}
+
+// Pretty-print for easy reading in CLI or TUI
+func (s *ConnectivityState) String() string {
+	return fmt.Sprintf(`=== Connectivity State at %s ===
+Connected routers : %v
+Active services   : %v
+Active clients    : %d
+`,
+		s.Timestamp.Format(time.RFC3339),
+		s.ConnectedRouters,
+		s.ActiveServices,
+		s.ActiveClients)
 }

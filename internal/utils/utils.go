@@ -20,3 +20,4 @@ func StringToMicrosecondsSinceEpoch(s string) (int64, error) {
     }
     return 0, fmt.Errorf("could not parse timestamp: %s", s)
 }
+

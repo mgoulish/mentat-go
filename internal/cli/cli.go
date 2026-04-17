@@ -9,6 +9,7 @@ import (
     "strings"
     "time"
 
+    "github.com/mgoulish/mentat/internal/connectivity"
     "github.com/mgoulish/mentat/internal/new"
     "github.com/mgoulish/mentat/internal/utils"
 )
@@ -63,8 +64,14 @@ func (c *MentatCLI) execute(line string) {
         c.doOverview()
     case "sites":
         c.doSites()
+    case "state":
+        c.doState(args)
+    case "debug-events":
+        c.doDebugEvents()
     case "events":
         c.doEvents(args)
+    case "debug-routers":
+        c.doDebugRouters()
     case "range":
         c.doRange(args)
     case "errors":
@@ -85,10 +92,27 @@ func (c *MentatCLI) doHelp() {
     fmt.Println("  events [n]             Show first n events (default 20)")
     fmt.Println("  range <start> <end>    Show events in ID range")
     fmt.Println("  errors [minutes]       Show error clumps (default 5 minutes)")
+    fmt.Println("  state [timestamp]      Show connectivity state at a time")
+    fmt.Println("                         (example: state 2025-09-16 04:30:00)")
+    fmt.Println("                         (no timestamp = first event time)")
     fmt.Println("  help                   Show this help")
     fmt.Println("  quit / q               Exit")
     fmt.Println()
 }
+
+/*
+func (c *MentatCLI) doHelp() {
+    fmt.Println("\nAvailable commands:")
+    fmt.Println("  overview               Show summary of loaded data")
+    fmt.Println("  sites                  List sites and routers")
+    fmt.Println("  events [n]             Show first n events (default 20)")
+    fmt.Println("  range <start> <end>    Show events in ID range")
+    fmt.Println("  errors [minutes]       Show error clumps (default 5 minutes)")
+    fmt.Println("  help                   Show this help")
+    fmt.Println("  quit / q               Exit")
+    fmt.Println()
+}
+*/
 
 
 func (c *MentatCLI) doOverview() {
@@ -176,6 +200,97 @@ func (c *MentatCLI) doErrors(args []string) {
     c.showClumpedErrors(errorEvents, minutes)
 }
 
+func (c *MentatCLI) doState(args []string) {
+    // If no timestamp given, use a reasonable default (first event time)
+    if len(args) == 0 {
+        if len(c.mentat.ConnectivityEvents) == 0 {
+            fmt.Println("No connectivity events loaded yet. Try loading a log first.")
+            return
+        }
+        // Default to time of first event
+        firstEv := c.mentat.ConnectivityEvents[0]
+        if ts, ok := firstEv["timestamp"].(string); ok {
+            t, _ := time.Parse("2006-01-02 15:04:05", ts) // rough parse
+            state := connectivity.StateAt(c.mentat.ConnectivityEvents, t)
+            fmt.Println(state.String())
+        }
+        return
+    }
+
+    // Parse user-provided timestamp
+    timeStr := strings.Join(args, " ")
+    t, err := parseTimeFlexible(timeStr)
+    if err == nil {
+        t = t.UTC()   // ← Force UTC to match event storage
+    }
+    if err != nil {
+        fmt.Printf("Error parsing time '%s': %v\n", timeStr, err)
+        fmt.Println("Examples: 2025-09-08 22:10:00   or   2025-09-16 04:17:20")
+        return
+    }
+
+    // Ensure events are loaded
+    if len(c.mentat.ConnectivityEvents) == 0 {
+        fmt.Println("No connectivity events loaded. The state command needs them.")
+        return
+    }
+
+    state := connectivity.StateAt(c.mentat.ConnectivityEvents, t)
+    fmt.Println(state.String())
+}
+
+func (c *MentatCLI) doDebugRouters() {
+    fmt.Println("Searching for inter-router connector events...")
+
+    count := 0
+    for _, ev := range c.mentat.ConnectivityEvents {
+        if typ, ok := ev["type"].(string); ok && typ == "flow_connector" {
+            host := ""
+            if h, ok := ev["dest_host"]; ok {
+                host = fmt.Sprintf("%v", h)
+            }
+            ts := ev["timestamp"]
+            fmt.Printf("%s | flow_connector → dest_host = %s\n", ts, host)
+            count++
+        }
+    }
+
+    if count == 0 {
+        fmt.Println("No flow_connector events found at all.")
+    } else {
+        fmt.Printf("Found %d flow_connector events total.\n", count)
+    }
+}
+
+func (c *MentatCLI) doDebugEvents() {
+    fmt.Printf("Total ConnectivityEvents: %d\n", len(c.mentat.ConnectivityEvents))
+    if len(c.mentat.ConnectivityEvents) == 0 {
+        fmt.Println("No events loaded.")
+        return
+    }
+
+    fmt.Println("\nFirst 10 event types:")
+    for i := 0; i < 10 && i < len(c.mentat.ConnectivityEvents); i++ {
+        ev := c.mentat.ConnectivityEvents[i]
+        typ := ev["type"]
+        ts := ev["timestamp"]
+        fmt.Printf("%3d | type: %-25s | timestamp: %s\n", i, typ, ts)
+    }
+
+    // Count how many of each type
+    counts := make(map[string]int)
+    for _, ev := range c.mentat.ConnectivityEvents {
+        if t, ok := ev["type"].(string); ok {
+            counts[t]++
+        }
+    }
+
+    fmt.Println("\nEvent type counts:")
+    for typ, cnt := range counts {
+        fmt.Printf("  %-28s : %d\n", typ, cnt)
+    }
+}
+
 func (c *MentatCLI) showClumpedErrors(events []new.Event, minutes int) {
     sort.Slice(events, func(i, j int) bool {
         return events[i].Micros < events[j].Micros
@@ -226,4 +341,22 @@ func shortenLine(line string, max int) string {
         return line
     }
     return line[:max] + "..."
+}
+
+
+// parseTimeFlexible tries several common formats from the log
+func parseTimeFlexible(s string) (time.Time, error) {
+    formats := []string{
+        "2006-01-02 15:04:05",
+        "2006-01-02 15:04",
+        "2006-01-02T15:04:05Z",
+        time.RFC3339,
+    }
+
+    for _, f := range formats {
+        if t, err := time.Parse(f, s); err == nil {
+            return t, nil
+        }
+    }
+    return time.Time{}, fmt.Errorf("could not parse time")
 }
