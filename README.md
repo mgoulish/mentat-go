@@ -1,2 +1,3 @@
 # mentat-go
-Mentat implemented in Go
+
+See https://github.com/mgoulish/mentat-go-2
